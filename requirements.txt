@@ -1,0 +1,6 @@
+Flask
+twilio
+transformers
+torch
+python-dotenv
+openai
