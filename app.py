@@ -46,7 +46,7 @@ def send_message(receiver, message):
 def generate_response(user_message):
     if "symptoms" in user_message:
         # Make a request to the Symptom Checker API
-        api_url = 'https://healthcare-api.com/symptom-check'
+        api_url = 'https://medlineplus.gov/medlineplus-connect/web-application/'
         api_key = 'your_api_key'
         user_symptoms = extract_symptoms_from_message(user_message)  # Call the extract_symptoms_from_message function
         response = requests.post(api_url, headers={'Authorization': f'Bearer {api_key}'}, json={'symptoms': user_symptoms})
