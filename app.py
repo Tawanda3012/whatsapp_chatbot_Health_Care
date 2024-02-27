@@ -1,83 +1,51 @@
-import os
-from dotenv import load_dotenv
-import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
-import openai
+from dotenv import load_dotenv
+import os
+from openai import OpenAI
 
-# Load environment variables from .env file
 load_dotenv()
 
+client = OpenAI()
 app = Flask(__name__)
 
-# Set your OpenAI API key
-openai.api_key = os.getenv('OPENAI_API_KEY')
-
-# Twilio credentials
+# Twilio client setup
 account_sid = os.getenv('ACCOUNT_SID')
 auth_token = os.getenv('AUTH_TOKEN')
-twilio_sandbox_number = os.getenv('TWILIO_SANDBOX_NUMBER')  # Update with your Twilio Sandbox for WhatsApp number
-whatsapp_client = Client(account_sid, auth_token)
+twilio_client = Client(account_sid, auth_token)
+twilio_phone_number = os.getenv('TWILIO_SANDBOX_NUMBER')
 
-# Dictionary to store user join links
-user_join_links = {}
+# OpenAI API key
+OpenAI.api_key = os.getenv('OPENAI_API_KEY')
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    req = request.get_json(force=True)
-    user_message = req['Body']
-    sender_id = req['From']
-
-    # Generate response using the integrated chatbot
-    response_text = generate_response(user_message)
-
-    # Send response back to user
-    send_message(sender_id, response_text)
-
-    return 'OK', 200
-
-def send_message(receiver, message):
-    whatsapp_client.messages.create(
-        from_=f'whatsapp:{twilio_sandbox_number}',
-        body=message,
-        to=f'whatsapp:{receiver}'
-    )
-
-def generate_response(user_message):
-    if "symptoms" in user_message:
-        # Make a request to the Symptom Checker API
-        api_url = 'https://medlineplus.gov/medlineplus-connect/web-application/'
-        api_key = 'your_api_key'
-        user_symptoms = extract_symptoms_from_message(user_message)  # Call the extract_symptoms_from_message function
-        response = requests.post(api_url, headers={'Authorization': f'Bearer {api_key}'}, json={'symptoms': user_symptoms})
-
-        # Process the API response and incorporate it into the chatbot's message
-        if response.status_code == 200:
-            diagnosis = response.json()['diagnosis']
-            response_text = f"Based on your symptoms, it seems like you may have {diagnosis}. It's important to consult a healthcare professional for further evaluation."
-        else:
-            response_text = "I'm here to help with your healthcare questions. How can I assist you today?"
+    incoming_msg = request.values.get('Body', '')
+    resp = MessagingResponse()
+    if contains_health_keywords(incoming_msg):
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": incoming_msg}]
+        )
+        resp.message(response.choices[0].message.content.strip())
     else:
-        # Generate response using OpenAI's GPT-3
-        response_text = generate_gpt3_response(user_message)
+        resp.message("Sorry, I can only respond to health-related issues.")
+    return str(resp)
 
-    return response_text
+def contains_health_keywords(message):
+    health_keywords = ["health", "medical", "doctor", "hospital", "symptoms"]
+    for keyword in health_keywords:
+        if keyword in message.lower():
+            return True
+    return False
 
-def generate_gpt3_response(user_message):
-    # Make a request to OpenAI's GPT-3 API
-    prompt = "User:" + user_message + "\nChatbot:"
-    response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=prompt,
-        max_tokens=150
-    )
-    return response.choices
+@app.route('/join', methods=['GET'])
+def join_chatbot():
+    whatsapp_number = "TWILIO_SANDBOX_NUMBER"   
+    default_message = "Hello, Welcome to healthcare chatbot"   
+    whatsapp_link = f"https://wa.me/{whatsapp_number}?text={default_message}"
+    return f"Click this link to join the chatbot: <a href='{whatsapp_link}'>{whatsapp_link}</a>"
 
-def extract_symptoms_from_message(message):
-    # Add your code here to extract symptoms from the user's message
-    # For example, you might use some kind of pattern matching or keyword search
-    symptoms = [...]  # Replace [...] with the extracted symptoms
-    return symptoms
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
