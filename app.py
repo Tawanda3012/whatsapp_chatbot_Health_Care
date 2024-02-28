@@ -1,51 +1,83 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client
-from dotenv import load_dotenv
-import os
-from openai import OpenAI
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+from keywords import health_keywords  # Importing health_keywords from keywords.py
 
-load_dotenv()
-
-client = OpenAI()
 app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///chatbot.db'
+db = SQLAlchemy(app)
 
-# Twilio client setup
-account_sid = os.getenv('ACCOUNT_SID')
-auth_token = os.getenv('AUTH_TOKEN')
-twilio_client = Client(account_sid, auth_token)
-twilio_phone_number = os.getenv('TWILIO_SANDBOX_NUMBER')
+# Hugging Face GPT-2 model and tokenizer
+model_name_or_path = "gpt2"
+tokenizer = GPT2Tokenizer.from_pretrained(model_name_or_path)
+model = GPT2LMHeadModel.from_pretrained(model_name_or_path)
 
-# OpenAI API key
-OpenAI.api_key = os.getenv('OPENAI_API_KEY')
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    number = db.Column(db.String(255), unique=True)
+
+    def __repr__(self):
+        return f'<User {self.id}>'
+
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    message = db.Column(db.String(255))
+    sender = db.Column(db.String(255))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    timestamp = db.Column(db.DateTime, server_default=db.func.now())
+
+    def __repr__(self):
+        return f'<Message {self.id}>'
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     incoming_msg = request.values.get('Body', '')
-    resp = MessagingResponse()
+    from_number = request.values.get('From', '')
+
+    # Check if the user number is already in the database
+    user = User.query.filter_by(number=from_number).first()
+    if user is None:
+        # If the user number is not in the database, add it
+        user = User(number=from_number)
+        db.session.add(user)
+        db.session.commit()
+
+    # Check if the incoming message contains health-related keywords
     if contains_health_keywords(incoming_msg):
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": incoming_msg}]
-        )
-        resp.message(response.choices[0].message.content.strip())
+        # Generate a response for the incoming message
+        input_ids = tokenizer.encode(incoming_msg, return_tensors="pt")
+        output = model.generate(input_ids, max_length=100, num_return_sequences=1)
+        outgoing_msg = tokenizer.decode(output[0], skip_special_tokens=True)
+        
+        # Save the user's message and the AI's response in the database
+        message = Message(message=incoming_msg, sender='user', user_id=user.id, timestamp=datetime.utcnow())
+        db.session.add(message)
+        db.session.commit()
+        
+        message = Message(message=outgoing_msg, sender='ai', user_id=user.id, timestamp=datetime.utcnow())
+        db.session.add(message)
+        db.session.commit()
+
+        # Send the AI's response back to the user
+        resp = MessagingResponse()
+        resp.message(outgoing_msg)
+        return str(resp)
     else:
-        resp.message("Sorry, I can only respond to health-related issues.")
-    return str(resp)
+        # If the message does not contain health-related keywords, provide a default response
+        resp = MessagingResponse()
+        resp.message("Sorry, I can only respond to health-related queries.")
+        return str(resp)
 
 def contains_health_keywords(message):
-    health_keywords = ["health", "medical", "doctor", "hospital", "symptoms"]
+    message_lower = message.lower()
     for keyword in health_keywords:
-        if keyword in message.lower():
+        if keyword in message_lower:
             return True
     return False
 
-@app.route('/join', methods=['GET'])
-def join_chatbot():
-    whatsapp_number = "TWILIO_SANDBOX_NUMBER"   
-    default_message = "Hello, Welcome to healthcare chatbot"   
-    whatsapp_link = f"https://wa.me/{whatsapp_number}?text={default_message}"
-    return f"Click this link to join the chatbot: <a href='{whatsapp_link}'>{whatsapp_link}</a>"
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    with app.app_context():
+        db.create_all()
+        app.run(debug=True)
